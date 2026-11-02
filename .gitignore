@@ -51,3 +51,5 @@ desktop.ini
 *.tmp
 _smoke.log
 _smoke.ps1
+# a zero-byte file that some probe/redirect keeps creating in the repo root
+127.0.0.1
