@@ -1,0 +1,24 @@
+# ============================================================
+#  Line endings matter here.
+#
+#  A .bat with LF-only line endings is mis-parsed by cmd.exe
+#  SILENTLY -- it cost a whole evening on 2026-09-21. Force CRLF.
+#  Shell scripts run on the Linux VPS and must stay LF.
+# ============================================================
+
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf
+
+# ---- binaries: never diff, never convert ------------------------
+*.exe     binary
+*.dll     binary
+*.db      binary
+*.mmdb    binary
+*.metadb  binary
+*.dat     binary
+*.png     binary
+*.jpg     binary

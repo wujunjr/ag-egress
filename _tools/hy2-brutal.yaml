@@ -1,0 +1,43 @@
+# A/B 对照组 2 —— Brutal CC（无视丢包，按设定速率硬推）
+#
+# ★ 关键事实（已核实，来源 v2.hysteria.network 官方 Full-Server-Config）：
+#   - 用不用 Brutal **完全由客户端决定**。客户端给了某方向的 bandwidth，
+#     该方向就用 Brutal；不给就用本地 congestion.type（默认 bbr）。
+#   - **服务端设 bandwidth 不会触发 Brutal**，它只是个「上限」，
+#     而且这个上限**只对 Brutal 生效**，对 BBR 毫无作用。
+#   → 所以想试 Brutal，改这里就行，服务端一个字都不用动。
+#
+# 🔴 2026-09-20 现状：**这份配置连不上。**
+#   启动即 `FATAL failed to initialize client {"error": "authentication error,
+#   HTTP status code: 404"}`，在**干净环境**（确认无残留 hysteria 进程）下可复现。
+#   已排除：密码逐字节一致（od -c 验过）、YAML 解析正常（YAML 坏掉报的是
+#   `failed to read client config`）、纯数字 25 是语法错（`invalid format`）。
+#   **去掉 bandwidth 段立刻恢复正常。** 原因不明，见
+#   `多端接入计划-OCI出口.md` §9.5。因为 BBR 已到天花板约 80%，不再追。
+#
+# ⚠️ 为什么只填 25 而不是 30：2026-09-20 服务器→中国实测 31.7 Mbps，
+#    手机侧 BBR 拿到 20 Mbps。25 是「略高于现状、明显低于实测上限」的试探值。
+#    填太高的后果是灾难性的 —— 见 install-hysteria2.sh 头部注释：
+#    30 mbps 灌进当时未测量的链路 → ~97% 丢包 → 客户端全部 abort。
+#
+# 启动： hysteria.exe client -c hy2-brutal.yaml
+# 本地 HTTP 代理： 127.0.0.1:7898   SOCKS5： 127.0.0.1:7899
+# 测速（与对照组用同一条命令、同一个文件）：
+#   curl.exe -x http://127.0.0.1:7898 -o NUL -w "%{speed_download}\n" \
+#     "https://speed.cloudflare.com/__down?bytes=15000000"
+
+server: 203.0.113.10:8443
+auth: __HY2_PASSWORD__
+
+tls:
+  sni: www.bing.com
+  insecure: true
+
+bandwidth:
+  up: 25 mbps
+  down: 25 mbps
+
+http:
+  listen: 127.0.0.1:7898
+socks5:
+  listen: 127.0.0.1:7899

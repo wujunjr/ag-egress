@@ -1,0 +1,53 @@
+# ============================================================
+#  ag-egress — what never goes into the repo
+# ============================================================
+
+# ---- 1. secrets -------------------------------------------------
+# These ARE the tunnel key. They are generated locally by setup.ps1
+# from *.example.* and must never be committed.
+# Whitelist style: anything under these dirs that is not the template
+# is treated as a live credential (including ad-hoc test copies).
+mihomo/*.yaml
+!mihomo/config.example.yaml
+hy2/*.yaml
+!hy2/client.example.yaml
+oci-egress/sing-box-server-config.json
+
+# local scratch / backups / real endpoint notes
+local/
+
+# ---- 2. runtime state -------------------------------------------
+*.log
+!docs/**/*.log
+mihomo/cache.db
+mihomo/probe-body.json
+hy2/hysteria-run.err.log
+_tools/*.log
+_tools/diag-*/
+_tools/*.txt
+!_tools/usb-package-README-FIRST.txt
+_tools/*.bak
+
+# ---- 3. AI assistant workspace ----------------------------------
+# Contains personal context, machine paths and 1:1 chat history.
+# NEVER publish this.
+.workbuddy/
+.workbuddy-ai/
+
+# ---- 4. build output --------------------------------------------
+_usb-package/
+
+# ---- 5. deprecated / archived -----------------------------------
+_deprecated/
+
+# ---- 6. OS / editor junk ----------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
+
+# ---- 7. scratch -------------------------------------------------
+*.tmp
+_smoke.log
+_smoke.ps1

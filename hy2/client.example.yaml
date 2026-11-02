@@ -1,0 +1,53 @@
+# ============================================================
+#  hy2/client.yaml -- Hysteria2 client (PRODUCTION, PC side)
+# ============================================================
+#  Role: upstream for mihomo. mihomo still owns 127.0.0.1:7897 and all
+#  rule-based routing (GEOSITE,cn direct etc). hysteria is just a dumb
+#  SOCKS5 hop that mihomo chains to.
+#
+#  Why not let mihomo speak hysteria2 natively?
+#    The mihomo binary here is Clash Meta v1.13.1 (2022-08-29) and has NO
+#    hysteria2 support (added in v1.15.0). Upgrading the core is the other
+#    option; chaining avoids swapping a binary the DLL hook depends on.
+#
+#  Why this exists at all -- measured 2026-09-20, same PC, same minute,
+#  same 10 MB file:
+#    old ss2022 / TCP 443  : 60 s timeout, only 560 KB / 938 KB ->  9-16 KB/s
+#    new hy2   / UDP 8443  : 10 MB complete                    -> 1.65 MB/s
+#  That is ~100-180x. It is not a config mistake: TCP on this path is capped
+#  by RTT 600 ms x 64 KB window (~107 KB/s), and 1.8% loss pushes it far
+#  below that. QUIC's receive window is 20 MB, so it is not bound by either.
+#
+#  ⚠️ Contains the hysteria password. Do not share this file.
+#  ASCII-only on purpose.
+# ============================================================
+
+server: __SERVER_HOST__:8443
+auth: __HY2_PASSWORD__
+tls:
+  sni: www.bing.com
+  insecure: true          # server cert is self-signed (openssl, 10 years)
+
+# SOCKS5 is what mihomo chains to. Keep it on 127.0.0.1 only.
+socks5:
+  listen: 127.0.0.1:7899
+
+# HTTP proxy kept only so you can test the upstream directly, bypassing
+# mihomo entirely:
+#   curl.exe -x http://127.0.0.1:7898 -o NUL -w "%{speed_download}\n" ^
+#     "https://proof.ovh.net/files/10Mb.dat"
+# If that works but 7897 does not, the problem is mihomo's chain, not hy2.
+http:
+  listen: 127.0.0.1:7898
+
+# ------------------------------------------------------------
+#  DO NOT add a `bandwidth:` block.
+#  Setting it switches this direction to Brutal CC, which ignores real link
+#  capacity and floods at the configured rate. Measured 2026-09-20: 30 mbps
+#  into an unmeasured link -> ~97% loss -> every stream aborted.
+#  Also: with `bandwidth` set, this client currently fails auth outright
+#  ("authentication error, HTTP status code: 404") -- cause unknown, three
+#  hypotheses ruled out. See 多端接入计划-OCI出口.md 9.5.
+#  BBR (the default, no bandwidth block) already reaches ~80% of the
+#  measured server-side ceiling. Nothing to gain here.
+# ------------------------------------------------------------

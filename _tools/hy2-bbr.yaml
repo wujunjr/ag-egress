@@ -1,0 +1,23 @@
+# A/B 对照组 1 —— BBR（自适应拥塞控制）
+#
+# 用途：与 hy2-brutal.yaml 做同一路径的对照实验，回答「20 Mbps 是链路封顶
+#       还是 BBR 没吃满」。
+#
+# 启动： hysteria.exe client -c hy2-bbr.yaml
+# 本地 HTTP 代理： 127.0.0.1:7898   SOCKS5： 127.0.0.1:7899
+# 测速： curl.exe -x http://127.0.0.1:7898 -o NUL -w "%{speed_download}\n" \
+#          "https://speed.cloudflare.com/__down?bytes=15000000"
+#
+# ⚠️ 不设 bandwidth 段 = BBR。这是服务端当前也在用的模式。
+
+server: 203.0.113.10:8443
+auth: __HY2_PASSWORD__
+
+tls:
+  sni: www.bing.com
+  insecure: true          # 服务端是自签证书，必须跳过校验
+
+http:
+  listen: 127.0.0.1:7898
+socks5:
+  listen: 127.0.0.1:7899

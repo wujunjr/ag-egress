@@ -1,0 +1,143 @@
+# Antigravity 出口隧道 —— mihomo【普通代理模式】(无 TUN)
+#
+# ============================================================
+#  链路（2026-09-11 建立；2026-09-20 换上游为 Hysteria2）
+# ============================================================
+#    language_server.exe (Go)
+#        │ version.dll (MinHook 钩 Winsock)
+#        ▼
+#    mihomo 127.0.0.1:7897  (本配置，负责全部规则分流)
+#        │ socks5 → 127.0.0.1:7899
+#        ▼
+#    hy2/hysteria.exe  (Hysteria2 客户端，哑跳板)
+#        │ Hysteria2 / QUIC / UDP 8443
+#        ▼
+#    Oracle Cloud VM  __SERVER_HOST__   ← 出口，judged US
+#        │
+#        ▼
+#    cloudcode-pa.googleapis.com ✓
+#
+#  ★ 2026-09-20 换链路：ss2022/TCP443 → Hysteria2/UDP8443
+#    实测同一分钟、同一个 10 MB 文件：
+#      旧 ss  → 60 s 超时，只拿 560 KB →  9~16 KB/s
+#      新 hy2 → 10 MB 下完           → 1.65 MB/s（约 100~180 倍）
+#    原因：TCP 被 RTT 600ms × 64KB 窗口卡死（≈107 KB/s），再叠 1.8% 丢包
+#    掉到 10 KB/s 级。QUIC 接收窗口 20 MB，不受这条限制。
+#    旧的 ss 节点保留在 AG-TUNNEL 里作 fallback（慢但能通）。
+#
+# ============================================================
+#  ★ 与上一版的区别（旧版是 VLESS-over-WS → Cloudflare Worker）
+# ============================================================
+#  1. 出口从「CF Worker 共享池（被 ipinfo/ip-api 判 CN）」换成
+#     「OCI 独享 IP（Ashburn，判 US）」—— 这是整件事的关键变化。
+#  2. 节点地址从【域名】变成【IP】→ 不再需要本地解析载体域名，
+#     也因此解除了对 WARP 提供干净 DNS 的依赖。
+#  3. ★ Cloudflare WARP 必须关闭（或用 Split Tunnel 排除该 IP）：
+#     实测 WARP 会把所有境外流量吃进隧道，导致到 OCI:443 完全不通
+#     （WARP 开：8/8 TIMEOUT；WARP 关：Connection refused ✅，延迟 450ms→206ms）。
+#     WARP 现已无用途 —— 它原本只是「到 CF Worker」那条已废弃路径的承载。
+#
+# ============================================================
+#  DNS 说明（WARP 关闭后重新设计）
+# ============================================================
+#  关键认知：**tunnel 类出站（ss/vless/trojan）会把【域名】原样交给服务端解析**，
+#  由 OCI 那台美国机器用干净 DNS 解析。所以本机 DNS 不参与隧道内的解析，
+#  → 境外域名不再有被本地污染的风险（旧版必须用 WARP 干净 DNS 的原因已消失）。
+#  本机 DNS 现在只服务两件事：
+#    ① GEOSITE,cn 命中的国内直连域名 —— 用国内解析器反而更准更快
+#    ② 兜底
+#  所以从 1.1.1.1/8.8.8.8 改为国内解析器。
+#  ⚠️ 若将来发现境外域名仍被本地解析（症状：Antigravity 报 400 或连不上），
+#     兜底方案是给 mihomo 挂 DoH 并让它走隧道，或改用 fake-ip。
+
+mixed-port: 7897
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+
+# ---------- DNS ----------
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: normal
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+
+proxies:
+  # ★ 主力（2026-09-20 起）：Hysteria2 / UDP 8443。
+  #   不是 mihomo 自己实现的 hy2 —— 本机 mihomo 是 Clash Meta v1.13.1（2022-08），
+  #   不支持 hysteria2（v1.15.0 才加）。所以这里是一个 socks5 出站，
+  #   指向由 hy2/hysteria.exe 提供的本地 SOCKS5（127.0.0.1:7899）。
+  #   规则分流仍由 mihomo 负责，hysteria 只当一个哑跳板。
+  #   实测（同一分钟、同一个 10 MB 文件）：
+  #     旧 ss2022/TCP443  → 60 s 超时，只拿 560 KB → 9~16 KB/s
+  #     新 hy2/UDP8443    → 10 MB 下完 → 1.65 MB/s（约 100~180 倍）
+  - name: "ag-oci-hy2"
+    type: socks5
+    server: 127.0.0.1
+    port: 7899
+    udp: false
+
+  # 兜底：原来的 ss2022 / TCP 443。
+  #   保留是因为它**能用，只是慢**（TCP 在这条链路上被 RTT 600ms × 64KB 窗口卡死）。
+  #   hy2 没起来时 fallback 会自动落到它，Antigravity 不会断，只是慢。
+  - name: "ag-oci"
+    type: ss
+    server: __SERVER_HOST__      # 直接写 IP：绕开 DNS 污染这一整类问题
+    port: 443
+    cipher: 2022-blake3-aes-256-gcm
+    password: __SS2022_PASSWORD__
+    udp: false
+
+proxy-groups:
+  # ★ 2026-09-20 起改为 fallback（原来是 select）。
+  #   理由变了：以前只有一个可用节点，fallback 只会制造「假冗余」；
+  #   现在有两个**都真能用**的节点（hy2 快 / ss 慢但能通），
+  #   fallback 的语义正好合适 —— 优先第一个，健康检查失败就自动落到下一个。
+  #   → hy2 没起来时不会断网，只是退回慢的那条。
+  #   注意：interval 设 60s。默认 300s 意味着 hy2 挂掉后最多要等 5 分钟才切换。
+  - name: "AG-TUNNEL"
+    type: fallback
+    url: "http://www.gstatic.com/generate_204"
+    interval: 60
+    proxies:
+      - "ag-oci-hy2"     # 首选
+      - "ag-oci"         # 兜底（慢，但通）
+  - name: "DIRECT-OUT"
+    type: select
+    proxies:
+      - "DIRECT"
+
+rules:
+  # 历史遗留：旧版为了「解析载体域名时不成环」而加的直连规则。
+  # 现在节点是 IP，这两个不再必要；保留无害。
+  - DOMAIN-SUFFIX,workers.dev,DIRECT-OUT
+  - DOMAIN-SUFFIX,egress.example.com,DIRECT-OUT
+
+  # Antigravity / Google / AI 平台：强制美国出口
+  - DOMAIN-SUFFIX,googleapis.com,AG-TUNNEL          # cloudcode-pa / daily-cloudcode-pa / oauth2
+  - DOMAIN-SUFFIX,googleapis.cn,AG-TUNNEL
+  - DOMAIN-SUFFIX,google.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,googleusercontent.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,googlesource.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,googlevideo.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,gstatic.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,ggpht.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,gvt1.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,gvt2.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,g.co,AG-TUNNEL
+  - DOMAIN-SUFFIX,android.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,anthropic.com,AG-TUNNEL
+  - DOMAIN-SUFFIX,claude.ai,AG-TUNNEL
+  - DOMAIN-SUFFIX,openai.com,AG-TUNNEL
+
+  # 国内直连（不绕美国）
+  - GEOSITE,cn,DIRECT-OUT
+
+  # 其余走隧道
+  - MATCH,AG-TUNNEL
