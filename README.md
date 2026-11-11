@@ -160,6 +160,8 @@ _tools/                       U 盘打包器、A/B 测试配置
 OCI出口搭建指南-Antigravity.md  ★ 服务端完整手册
 GCP出口搭建指南.md             备选方案 / 计费说明
 多端接入计划-OCI出口.md         手机 / PC 多端接入与性能实测
+docs/OCI-全部配置总览.md        ★ 两台 OCI 实例的全部配置（公开脱敏档案）
+skills/oci-a1-ops/              A1 执行端运维 / 签到排障 skill + 脚本
 BACKLOG.md                    待办与"明确不做"的事
 ```
 
