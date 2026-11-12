@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
-"""A1 / Qoder CN daily 100 credits claim - FINAL (v7, 2026-11-11).
+"""A1 / Qoder CN daily 100 credits claim - v9 (2026-11-12).
 
-Why v7: the Rewards Center is an out-of-process iframe (OOPIF) that appears in
-CDP /json/list as type="iframe". Playwright's connect_over_cdp maps it to a
-frame only intermittently (v3 worked once at 12:34, v4/v5/v6 all failed), so
-v7 talks to that target DIRECTLY over its own DevTools WebSocket using a tiny
-stdlib-only WebSocket client. No pip install, no Playwright frame mapping.
+Two bugs fixed on top of v7/v8:
 
-Flow:
-  1. Playwright is used ONLY to click the official UI entry (user menu ->
-     "Rewards center" menuitem). Presence of the target is confirmed via
-     /json/list, which is authoritative and independent of Playwright.
-  2. Connect to that target's webSocketDebuggerUrl, Runtime.evaluate the DOM,
-     apply the guards, click "Claim", verify the resulting text.
+1. v7 (2026-11-12 10:05): the Rewards Center OOPIF iframe stays open for
+   days. v7 only checked that the CDP target exists and read a STALE card
+   showing yesterday's "Claimed" -> SKIP, silently missing the day's credits
+   while exiting 0. v8 added a forced iframe reload on every run.
+2. v8 (2026-11-12 22:58): the DOM contains TWO elements whose innerText is
+   exactly "Claim":
+       <div class="h_DSyS"><button class="KTdEo7">Claim</button></div>
+   `els.find()` over 'button,[role=button],a,div' hit the OUTER DIV first
+   (document order), whose .click() has no handler -> "CLICKED" in the log
+   but nothing was claimed. v9 targets BUTTON elements only.
+
+v9 also VERIFIES the outcome: after clicking, the card must show "Claimed"
+or the Claim button must disappear. If not, it retries with a real CDP
+Input.dispatchMouseEvent, and returns non-zero if still unconfirmed, so a
+silent miss can never again look like a successful systemd run.
+
+Architecture:
+  * Playwright only clicks the official UI entry; /json/list confirms target.
+  * Direct DevTools WebSocket to the OOPIF target (stdlib-only client),
+    because Playwright's frame mapping for this iframe is unreliable.
+  * NEVER call /json/close on the rewards target (kills the main window).
 
 Safety rules unchanged:
   * Refuse unless ~/.qoder-cn/.qoder-app-status.json says logged_in=true.
-  * Only click when the card shows "100 Credits" AND an enabled element whose
-    exact text is "Claim" exists.
-  * Anything else -> log SKIP, take no action. Never click by coordinates.
-  * DO NOT call /json/close on the rewards target: that killed the Qoder main
-    window at 12:39 and lost the login state.
+  * Only click when the fresh card shows "100 Credits" AND an enabled BUTTON
+    whose exact text is "Claim" exists.
+  * Anything else -> SKIP / ERROR, no blind coordinate clicking.
 """
 import base64
 import json
@@ -50,8 +59,9 @@ def log(msg):
         f.write(line + "\n")
 
 
-# ---------- minimal stdlib WebSocket client (CDP uses text frames) ----------
 class WS:
+    """Minimal stdlib WebSocket client for CDP text frames."""
+
     def __init__(self, url):
         u = urlparse(url)
         self.sock = socket.create_connection((u.hostname, u.port or 80), timeout=10)
@@ -111,7 +121,7 @@ class WS:
             data = self._exact(ln)
             if mask:
                 data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
-            if opcode == 0x9:              # ping -> pong
+            if opcode == 0x9:
                 self._frame(0xA, data)
                 continue
             if opcode == 0x8:
@@ -146,7 +156,6 @@ class WS:
             pass
 
 
-# ---------- CDP target discovery ----------
 def targets():
     with urllib.request.urlopen(CDP + "/json/list", timeout=5) as r:
         return json.load(r)
@@ -159,7 +168,6 @@ def rewards_target():
     return None
 
 
-# ---------- phase 1: official UI click ----------
 def phase_open():
     if rewards_target():
         log("rewards target already open")
@@ -211,50 +219,125 @@ def phase_open():
     return 3
 
 
-# ---------- phase 2: direct CDP DOM claim ----------
+def fresh_card(timeout=25):
+    """Reload iframe content so we never read yesterday's Claimed state."""
+    t = rewards_target()
+    if not t or not t.get("webSocketDebuggerUrl"):
+        return None, None
+    try:
+        w = WS(t["webSocketDebuggerUrl"])
+        try:
+            w.evaluate(90, "location.reload(); 'reload-requested'")
+        except Exception:
+            pass  # execution context destroyed by reload is expected
+        finally:
+            w.close()
+        log("requested rewards iframe reload")
+    except Exception as e:
+        log("WARN reload request: %s" % type(e).__name__)
+
+    for i in range(timeout):
+        time.sleep(1)
+        t2 = rewards_target()
+        if not t2 or not t2.get("webSocketDebuggerUrl"):
+            continue
+        conn = None
+        try:
+            conn = WS(t2["webSocketDebuggerUrl"])
+            conn.call(1, "Runtime.enable")
+            txt = conn.evaluate(100 + i, "document.body.innerText")
+            if txt and "100 Credits" in txt:
+                log("card fresh after %ds" % (i + 1))
+                return conn, txt
+        except Exception:
+            pass
+        if conn:
+            conn.close()
+    return None, None
+
+
+# ONLY real buttons / role=button. Never let an outer wrapper DIV win.
+STATE_JS = """(() => {
+  const b = Array.from(document.querySelectorAll('button,[role="button"]'))
+    .find(x => (x.innerText || '').trim() === 'Claim');
+  if (!b) return 'NO_BUTTON';
+  if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'DISABLED';
+  return 'ENABLED';
+})()"""
+
 CLAIM_JS = """(() => {
-  const els = Array.from(document.querySelectorAll('button,[role="button"],a,div'));
-  const b = els.find(x => (x.innerText || '').trim() === 'Claim'
-    && !x.disabled && x.getAttribute('aria-disabled') !== 'true');
+  const b = Array.from(document.querySelectorAll('button,[role="button"]'))
+    .find(x => (x.innerText || '').trim() === 'Claim'
+      && !x.disabled && x.getAttribute('aria-disabled') !== 'true');
   if (!b) return 'NO_BUTTON';
   b.click();
   return 'CLICKED';
 })()"""
 
 
-def phase_claim():
-    t = rewards_target()
-    if not t:
-        log("SKIP - rewards target absent; no click made")
-        return 3
-    ws_url = t.get("webSocketDebuggerUrl")
-    if not ws_url:
-        log("SKIP - no debugger url for rewards target; no click made")
-        return 3
-    ws = WS(ws_url)
+def wait_claimed(ws, rounds=8):
+    """A click only counts when the card confirms it."""
+    txt = ""
+    for i in range(rounds):
+        time.sleep(1)
+        try:
+            txt = ws.evaluate(300 + i, "document.body.innerText") or ""
+            st = ws.evaluate(400 + i, STATE_JS)
+        except Exception:
+            continue
+        if "Claimed" in txt or st == "NO_BUTTON":
+            return True, txt
+    return False, txt
+
+
+def real_mouse_click(ws):
+    """Fallback: dispatch a real mouse press/release at the button centre."""
     try:
-        ws.call(1, "Runtime.enable")
-        text = ws.evaluate(2, "document.body.innerText") or ""
-        log("card=%s" % text.replace("\n", " | ")[:240])
-        if "100 Credits" not in text:
-            log("SKIP - daily 100 credits card not visible; no click made")
-            return 0
-        state = ws.evaluate(3, """(() => {
-          const els = Array.from(document.querySelectorAll('button,[role="button"],a,div'));
-          const b = els.find(x => (x.innerText || '').trim() === 'Claim');
-          if (!b) return 'NO_BUTTON';
-          if (b.disabled || b.getAttribute('aria-disabled') === 'true') return 'DISABLED';
-          return 'ENABLED';
+        pt = ws.evaluate(500, """(() => {
+          const b = Array.from(document.querySelectorAll('button'))
+            .find(x => (x.innerText || '').trim() === 'Claim');
+          if (!b) return null;
+          const r = b.getBoundingClientRect();
+          return {x: r.x + r.width / 2, y: r.y + r.height / 2};
         })()""")
+        if not pt:
+            return False
+        ws.call(501, "Input.dispatchMouseEvent",
+                {"type": "mousePressed", "x": pt["x"], "y": pt["y"],
+                 "button": "left", "clickCount": 1})
+        ws.call(502, "Input.dispatchMouseEvent",
+                {"type": "mouseReleased", "x": pt["x"], "y": pt["y"],
+                 "button": "left", "clickCount": 1})
+        return True
+    except Exception as e:
+        log("WARN mouse fallback: %s" % type(e).__name__)
+        return False
+
+
+def phase_claim():
+    ws, text = fresh_card()
+    if ws is None:
+        log("ERROR - rewards card unreadable after reload; no click made")
+        return 3
+    try:
+        log("card=%s" % text.replace("\n", " | ")[:260])
+        state = ws.evaluate(200, STATE_JS)
         log("claim_button=%s" % state)
         if state != "ENABLED":
             log("SKIP - Claim button absent/disabled (already claimed?); no click made")
             return 0
-        result = ws.evaluate(4, CLAIM_JS)
+
+        result = ws.evaluate(201, CLAIM_JS)
         log("CLICKED Claim (%s)" % result)
-        time.sleep(4)
-        after = ws.evaluate(5, "document.body.innerText") or ""
-        log("after=%s" % after.replace("\n", " | ")[:220])
+        ok, after = wait_claimed(ws)
+        if not ok and real_mouse_click(ws):
+            log("button.click had no effect; retried with real mouse event")
+            ok, after = wait_claimed(ws)
+        if not ok:
+            log("ERROR - claim NOT confirmed on card; no false success. after=%s"
+                % after.replace("\n", " | ")[:220])
+            return 4
+        log("CONFIRMED card=%s" % after.replace("\n", " | ")[:220])
         log("DONE")
         return 0
     finally:

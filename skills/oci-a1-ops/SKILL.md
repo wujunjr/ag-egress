@@ -119,15 +119,24 @@ timer 没跑 / 报 failed
 | `get_by_text("Rewards center", exact=True)` | ❌ 提示串更长，永远匹配不到 |
 | Playwright 同一进程内重连 CDP | ❌ 新 OOPIF 不会出现在 `pg.frames` |
 | 独立子进程重连 | ❌ 仍不稳定（只偶然成功过一次） |
-| **原生 CDP WebSocket 直连该 target** | ✅ v7，稳定 |
+| **原生 CDP WebSocket 直连该 target** | ✅ v9 的基础，通道稳定 |
 
-**v7 三段式**（`scripts/a1_checkin_qoder_cn_v7.py`）：
+**v9 流程**（`scripts/a1_checkin_qoder_cn.py`）：
 
-1. Playwright **只点菜单**，不改任何业务状态
-2. `/json/list` 确认 `growth-page` target 存在（判据独立于 Playwright）
+1. Playwright **只点菜单**；`/json/list` 确认 `growth-page` target 存在。
+2. 🔴 **每次先让 iframe 重载**（`location.reload()`）再读卡片。
+   这个 OOPIF 是长驻 target，不刷新会保留**昨天的 `Claimed`**：
+   2026-11-12 10:05 v7 就因此把「昨天已领」误判成「今天已领」，
+   退出码 0、systemd 显示成功，实际漏领一整天。
 3. 标准库手写 WebSocket 连该 target 的 `webSocketDebuggerUrl`，
-   `Runtime.evaluate` 读 `document.body.innerText` →
-   校验 `100 Credits` 且存在精确文本 `Claim` 且未禁用 → 点击 → 复读卡片
+   `Runtime.evaluate` 读 DOM，校验 `100 Credits` + 精确 `Claim` 按钮。
+4. 🔴 **只点 `button` / `[role=button]`**，别用
+   `querySelectorAll('button,...,div').find(...)`：卡片 DOM 是
+   `<div><button>Claim</button></div>`，外层 div 的 innerText 也是 `Claim`，
+   按文档顺序会先命中它，`.click()` 没绑事件 → 日志写 CLICKED 其实没领。
+5. 🔴 **点击后必须验证**：卡片出现 `Claimed` 或按钮消失才算成功；
+   否则用 `Input.dispatchMouseEvent` 真实鼠标事件重试，仍不确认就**非零退出**，
+   绝不把「点过了」当成「领到了」。
 
 ```bash
 # 看 target 是否真的生成（这一步决定后续怎么修）
@@ -137,8 +146,8 @@ curl -s http://127.0.0.1:9227/json/list | grep -oE '"(type|url)": "[^"]*"' | hea
 🔴 **绝对不要对该 iframe target 调 `/json/close`**。实测会带崩 Qoder CN 主窗口，
 systemd 重启后登录态丢失。想验证冷态就等客户端自然重启，别手动关 target。
 
-🔴 **不要回退到 v3~v6**：它们依赖 Playwright 映射 OOPIF。每版在实例
-`~/.local/bin/` 有 `.bak-*-20261111` 备份，仅供对照。
+🔴 **不要回退到 v3~v8**：v3~v6 依赖 Playwright 映射 OOPIF；v7 读跨天陈旧卡片；
+v8 点到了外层 div。每版在实例 `~/.local/bin/` 有 `.bak-*` 备份，仅供对照。
 
 ---
 
@@ -239,7 +248,7 @@ git diff --cached | grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
 
 | 文件 | 用途 |
 |---|---|
-| `scripts/a1_checkin_qoder_cn_v7.py` | Qoder CN 签到终版（原生 CDP WebSocket 直连 OOPIF） |
+| `scripts/a1_checkin_qoder_cn.py` | Qoder CN 签到正本 **v9**（跨天强制刷新 + 只点 button + 结果验证） |
 | `scripts/a1_checkin_trae_v2.py` | TRAE CN 签到（含模态弹窗处理与受控重试） |
 
 脚本内的路径、端口、坐标基于 `Xvfb :99 @ 1280x800`；换分辨率要重新标定坐标。

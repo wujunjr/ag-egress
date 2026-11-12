@@ -321,16 +321,23 @@ Navidrome 常驻但 0 首，源目录已定位。用户明确「暂时不着急�
 | `get_by_text("Rewards center", exact=True)` | 侧栏提示串是 `Rewards center, benefits available`，精确匹配永远失败 |
 | 用 `[role=menuitem]` 点开 + 同一进程内重连 CDP | Playwright 不把新 OOPIF 映射成 `pg.frames`，找不到 |
 | 独立子进程重连 | 仍不稳定（只有一次偶然成功） |
-| **原生 CDP WebSocket 直连该 target**（v7，终解） | ✅ 稳定 |
+| **原生 CDP WebSocket 直连该 target**（v7 起） | ✅ 通道稳定 |
+| v7 直接读卡片 | ❌ 跨天读到昨天残留的 `Claimed`，静默漏领（11-12 10:05） |
+| v8 用宽选择器 `find()` 找 `Claim` | ❌ 命中外层 `<div>`，点了没绑事件的容器 |
+| **v9：刷新 + 只点 button + 结果验证** | ✅ 当前正本 |
 
-**v7 架构**（脚本见 `skills/oci-a1-ops/scripts/a1_checkin_qoder_cn_v7.py`）：
+**v9 架构**（脚本见 `skills/oci-a1-ops/scripts/a1_checkin_qoder_cn.py`）：
 
 1. Playwright **只负责点官方 UI 入口**：`button[aria-label="Open user menu"]` →
    `div[role=menuitem]` 中文本为 `Rewards center` 的项。
-2. 用 `/json/list` 确认 `growth-page` target 出现 —— 这个判据**独立于 Playwright**，最可靠。
-3. 用标准库手写的最小 WebSocket 客户端（零依赖、不装包）直连该 target 的
-   `webSocketDebuggerUrl`，`Runtime.evaluate` 读 `document.body.innerText`，
-   校验 `100 Credits` + 精确 `Claim` 按钮未禁用 → 点击 → 复读卡片。
+2. 用 `/json/list` 确认 `growth-page` target 出现 —— 判据**独立于 Playwright**。
+3. 🔴 **每次先 `location.reload()` 重载 iframe** 再读卡片。这个 OOPIF 是长驻 target，
+   不刷新会留着昨天的 `Claimed`；v7 就是这样在 11-12 10:05 退出码 0 却漏领一整天。
+4. 标准库手写 WebSocket 直连 `webSocketDebuggerUrl`，`Runtime.evaluate` 读 DOM，
+   校验 `100 Credits` + **只从 `button` / `[role=button]` 里**找精确文本 `Claim` 且未禁用。
+   卡片 DOM 是 `<div><button>Claim</button></div>`，含 `div` 的宽选择器会先命中无事件的外层容器。
+5. 点击后**必须看到 `Claimed` 或按钮消失**才报成功；否则用真实鼠标事件
+   `Input.dispatchMouseEvent` 重试，仍不确认就非零退出 —— 不让静默漏领伪装成成功。
 
 🔴 **禁止对该 iframe target 调 `/json/close`**：实测会带崩 Qoder CN 主窗口，
 systemd 重启后登录态丢失。这条已写进脚本注释。
@@ -350,8 +357,13 @@ systemd 重启后登录态丢失。这条已写进脚本注释。
 
 ### 8.5 版本演进留痕
 
-`v2 → v3 → v4 → v5 → v6 → v7`，每版在实例 `~/.local/bin/` 都有
-`.bak-*-20261111` 备份。**别回退到 v3~v6**：它们依赖 Playwright 映射 OOPIF，不稳定。
+`v2 → v3 → v4 → v5 → v6 → v7 → v8 → v9`，每版在实例 `~/.local/bin/` 都有 `.bak-*`
+备份。**别回退**：v3~v6 依赖 Playwright 映射 OOPIF；v7 会读跨天陈旧卡片；
+v8 点错元素（外层 div）。当前正本 **v9**（2026-11-12）。
+
+> 两次静默漏领的教训：一次是「target 在 → 就以为内容是今天的」，
+> 一次是「日志写了 CLICKED → 就以为领到了」。**自动化签到必须有结果回执，
+> 否则退出码 0 只是「脚本没崩」，不代表积分到账。**
 
 ---
 
