@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic GUI client watchdog (Xvfb restart recovery)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=gui-watchdog.service
+
+[Install]
+WantedBy=timers.target

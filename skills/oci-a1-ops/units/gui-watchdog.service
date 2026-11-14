@@ -1,0 +1,6 @@
+[Unit]
+Description=Heal GUI coding-agent clients after an Xvfb restart
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/.local/bin/a1_gui_watchdog.sh

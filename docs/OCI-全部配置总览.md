@@ -243,6 +243,7 @@ Qoder 的后台 agent 任务。
 | Navidrome | Docker | `100.64.0.10:4533` | 音频（暂缓） |
 | `immich-db-dump.timer` | system | 03:30 | `pg_dump -Fc` → `/srv/backup/`，留 7 份 |
 | `checkin-capture.timer` | user | 08:05 | **只读**截图，不是签到 |
+| `gui-watchdog.timer` | user | 每 30 min + 开机 5 min | Xvfb 重启后自愈三个 GUI 客户端（2026-11-14 新增） |
 | `checkin-claim.timer` | user | 08:10 | WorkBuddy 签到 |
 | `checkin-trae.timer` | user | 08:15 | TRAE CN 签到 |
 | `checkin-qoder-cn.timer` | user | 10:05 | Qoder CN 权益中心 100 credits（10:00 UTC+8 重置） |
@@ -295,7 +296,7 @@ Navidrome 常驻但 0 首，源目录已定位。用户明确「暂时不着急�
 
 | 客户端 | 判据 | 点击 |
 |---|---|---|
-| WorkBuddy | 左侧栏 `Claim Now` 白按钮框 `(65,693)-(163,721)` 白像素比 ≥0.55 | `(114,707)`；点后白像素比减半才算 `DONE` |
+| WorkBuddy | **v2 动态定位**：左下区域 `(30,620)-(340,770)` 滑窗扫描 98×28 白色矩形，白像素比 ≥0.35 | 命中框中心；点后同框白像素比减半才算 `DONE`。窗口消失则先重启 `workbuddy.service` 再找 |
 | TRAE CN | 账号菜单 `Check in` 黑按钮框 `(211,361)-(281,390)` 暗像素比 ≥0.40 | `(245,377)`；点后变灰才算 `DONE` |
 | Qoder CN | 权益中心卡片含 `100 Credits` **且**存在精确文本 `Claim` 且未禁用 | DOM click；点后复读卡片 |
 
@@ -364,6 +365,37 @@ v8 点错元素（外层 div）。当前正本 **v9**（2026-11-12）。
 > 两次静默漏领的教训：一次是「target 在 → 就以为内容是今天的」，
 > 一次是「日志写了 CLICKED → 就以为领到了」。**自动化签到必须有结果回执，
 > 否则退出码 0 只是「脚本没崩」，不代表积分到账。**
+
+### 8.6 Xvfb 重启事故与看门狗（2026-11-13 ~ 14）
+
+11-13 06:18 `apt-daily-upgrade`（unattended-upgrade）升级 glibc →
+`systemd[1]: Reexecuting requested` → 连带重启 `xvfb.service`。
+**不是整机重启**（boot 仍是 11-08），但 X server 一换，旧窗口全部销毁：
+
+| 客户端 | 结果 | 原因 |
+|---|---|---|
+| WorkBuddy | 11-13、11-14 两天 `window not visible` | Electron 主进程 PID 从 11-08 起没退出，`Restart=always` 不触发 → 进程活着、窗口没了 |
+| TRAE CN | 两天 `DONE` | 进程随 X 断开退出并被拉起，登录态保住 |
+| Qoder CN | 两天 `not logged in`（exit 2） | 同样重启，但登录态丢失；v9 正确非零退出，没有静默漏领 |
+
+另有第三个独立问题：WorkBuddy 重启后侧栏布局变化，白色 `Claim Now` 按钮
+从 `(65,693)-(163,721)` 移到 `(177,683)-(275,711)` → 硬编码坐标 guard 失效、
+`white_ratio=0.009 → SKIP`。截图证明按钮还在，**SKIP 不等于已领**。
+
+修法：
+
+1. `a1_checkin_claim.py` 改 **v2**：动态滑窗扫描白色按钮 + 窗口缺失时自动
+   `systemctl --user restart workbuddy.service`；点后验证按钮消失才 `DONE`。
+2. `gui-watchdog.timer`（user unit，每 30 min + 开机 5 min）跑
+   `a1_gui_watchdog.sh`：① 对比 `xvfb.service` 的 `ActiveEnterTimestamp` 与
+   上次记录，变了就重启三个客户端；② `xdotool search --name`（**不加**
+   `--onlyvisible`，因为签到脚本会合法地最小化别的窗口）检查窗口是否彻底消失；
+   ③ Qoder 登录态 false 只记 WARN（无法自愈，需用户点设备码链接）。
+3. 🔴 **不禁用 apt 自动升级** —— 那是安全更新。新内核已装未重启，
+   下次重启还会再断一次链，靠 watchdog 恢复。
+
+> 判据优先级：`Xvfb ActiveEnterTimestamp` 比客户端新 = 断过链，
+> 比「窗口标题还在不在」更可靠（Electron 主进程可能保留窗口对象）。
 
 ---
 

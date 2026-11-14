@@ -149,6 +149,39 @@ systemd 重启后登录态丢失。想验证冷态就等客户端自然重启，
 🔴 **不要回退到 v3~v8**：v3~v6 依赖 Playwright 映射 OOPIF；v7 读跨天陈旧卡片；
 v8 点到了外层 div。每版在实例 `~/.local/bin/` 有 `.bak-*` 备份，仅供对照。
 
+### 2.4 Xvfb 重启：多个客户端同时失败（2026-11-13 实证）
+
+**症状**：同一天 WorkBuddy `window not visible`、Qoder CN `not logged in`，
+TRAE 却正常；timer 都按时跑了。
+
+**根因链**：`apt-daily-upgrade.service`（unattended-upgrade）升级 glibc →
+`systemd[1]: Reexecuting requested` → 连带 `Stopping xvfb.service` →
+X server 重建，**旧 X 上的所有窗口销毁**。
+
+- WorkBuddy：Electron 主进程**没退出**（只有 `FATAL: Failed to shutdown`），
+  `Restart=always` 不触发 → 进程活着但窗口永久消失。
+- TRAE / Qoder CN：进程随 X 断开退出并被拉起，窗口重建；
+  TRAE 登录态保住，**Qoder CN 掉登录**（见 §3）。
+
+**判据（别猜）**：
+```bash
+systemctl show xvfb.service -p ActiveEnterTimestamp --value
+systemctl --user show workbuddy.service -p ActiveEnterTimestamp --value
+journalctl --since "today" --no-pager | grep -iE "apt-daily-upgrade|Reexecuting|Stopping xvfb"
+grep "Start-Date" /var/log/apt/history.log | tail -5
+```
+Xvfb 时间戳比客户端新 = 断过链。
+
+**已部署自愈**：`gui-watchdog.timer`（systemd **user**，每 30 min + 开机后 5 min）
+跑 `scripts/a1_gui_watchdog.sh`：
+① 对比 `xvfb.service` 的 `ActiveEnterTimestamp` 与上次记录，变了就重启三个客户端；
+② 用 `xdotool search --name`（**不加 `--onlyvisible`**，签到脚本会合法地最小化别的窗口）
+检查窗口是否彻底消失，缺哪个重启哪个；
+③ Qoder 登录态为 false 时只记 WARN —— 这一步**无法自愈**，必须用户点设备码链接。
+
+🔴 **不要为了防复发去禁用 apt 自动升级**：那是安全更新。
+新内核装完后下次重启还会再断一次链，靠 watchdog 恢复即可。
+
 ---
 
 ## 3. 客户端掉登录恢复
@@ -250,6 +283,9 @@ git diff --cached | grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
 |---|---|
 | `scripts/a1_checkin_qoder_cn.py` | Qoder CN 签到正本 **v9**（跨天强制刷新 + 只点 button + 结果验证） |
 | `scripts/a1_checkin_trae_v2.py` | TRAE CN 签到（含模态弹窗处理与受控重试） |
+| `scripts/a1_checkin_claim.py` | WorkBuddy 签到 **v2**（动态白按钮定位 + 窗口缺失自愈） |
+| `scripts/a1_gui_watchdog.sh` | Xvfb 重启后自愈三个 GUI 客户端（时间戳判据 + 窗口检查） |
+| `units/gui-watchdog.service` / `.timer` | 看门狗的 systemd **user** unit（每 30 min + 开机 5 min） |
 
 脚本内的路径、端口、坐标基于 `Xvfb :99 @ 1280x800`；换分辨率要重新标定坐标。
 部署位置：实例 `~/.local/bin/`，由同名 systemd user service 调用。
